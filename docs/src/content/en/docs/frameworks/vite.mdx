@@ -162,7 +162,10 @@ async function handleSubmit() {
   try {
     const agent = mastraClient.getAgent('weatherAgent')
     const result = await agent.generate({
-      messages: [{ role: 'user', content: `What's the weather like in ${city.value}?` }],
+      messages: [{
+        role: 'user',
+        content: `What's the weather like in ${city.value}?`
+      }]
     })
     
     response.value = result.text
@@ -197,7 +200,7 @@ async function handleSubmit() {
 
 ### Configure Vite Proxy for Development
 
-For local development, you can use Vite's proxy feature to avoid CORS issues when calling your Mastra backend:
+For local development, use Vite's proxy feature to avoid CORS issues:
 
 ```javascript filename="vite.config.js" copy
 import { defineConfig } from 'vite'
@@ -207,24 +210,13 @@ export default defineConfig({
   plugins: [react()],
   server: {
     proxy: {
-      // Proxy API requests to your Mastra backend
       '/api': {
         target: 'http://localhost:4111',
         changeOrigin: true,
-        secure: false,
       },
     },
   },
 })
-```
-
-With this configuration, requests to `/api/*` from your Vite app will be proxied to your Mastra backend, allowing you to use relative paths in your client code:
-
-```typescript
-// Using the proxy configuration
-export const mastraClient = new MastraClient({
-  baseUrl: '', // Empty string uses the current origin + /api
-});
 ```
 
 ### Deployment
@@ -276,34 +268,16 @@ pnpm dlx mastra@latest init
 
 This will set up Mastra in your Vite project. For more details about init and other configuration options, see our [mastra init reference](/reference/cli/init).
 
-### Create a Backend Server
+### Create a Simple API Server
 
-Since Vite doesn't include a server runtime like Next.js, you'll need to create a simple Express server to handle Mastra API requests.
+Since Vite doesn't include a server runtime like Next.js, create a simple Express server:
 
-First, install the necessary dependencies:
-
-<Tabs items={["npm", "yarn", "pnpm"]}>
-  <Tabs.Tab>
 ```bash copy
 npm install express cors
 npm install -D @types/express @types/cors
 ```
-  </Tabs.Tab>
-  <Tabs.Tab>
-```bash copy
-yarn add express cors
-yarn add -D @types/express @types/cors
-```
-  </Tabs.Tab>
-  <Tabs.Tab>
-```bash copy
-pnpm add express cors
-pnpm add -D @types/express @types/cors
-```
-  </Tabs.Tab>
-</Tabs>
 
-Create a server file in your project:
+Create a server file:
 
 ```typescript filename="server.ts" copy
 import express from 'express';
@@ -313,13 +287,9 @@ import { mastra } from './mastra';
 const app = express();
 const port = process.env.PORT || 4111;
 
-// Enable CORS for your Vite frontend
 app.use(cors({
-  origin: process.env.NODE_ENV === 'production' 
-    ? 'https://your-production-domain.com' 
-    : 'http://localhost:5173', // Default Vite dev server port
+  origin: 'http://localhost:5173', // Default Vite dev server port
   methods: ['GET', 'POST'],
-  credentials: true,
 }));
 
 app.use(express.json());
@@ -331,7 +301,7 @@ app.post('/api/agents/:agentId/generate', async (req, res) => {
     const { messages } = req.body;
     
     const agent = mastra.getAgent(agentId);
-    const result = await agent.generate(messages[0]);
+    const result = await agent.generate({ messages });
     
     res.json({ text: result.text });
   } catch (error) {
@@ -340,80 +310,28 @@ app.post('/api/agents/:agentId/generate', async (req, res) => {
   }
 });
 
-// Create an endpoint for streaming responses
-app.post('/api/agents/:agentId/stream', async (req, res) => {
-  try {
-    const { agentId } = req.params;
-    const { messages } = req.body;
-    
-    const agent = mastra.getAgent(agentId);
-    const stream = await agent.stream(messages[0]);
-    
-    // Set up SSE connection
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
-    
-    // Forward stream chunks to client
-    stream.onChunk((chunk) => {
-      res.write(`data: ${JSON.stringify({ text: chunk })}\n\n`);
-    });
-    
-    // Close connection when stream ends
-    stream.onComplete(() => {
-      res.end();
-    });
-    
-    // Handle client disconnect
-    req.on('close', () => {
-      stream.cancel();
-    });
-  } catch (error) {
-    console.error('Error:', error);
-    res.status(500).json({ error: 'Failed to stream response' });
-  }
-});
-
 app.listen(port, () => {
   console.log(`Mastra server listening at http://localhost:${port}`);
 });
 ```
 
-Add a script to your `package.json` to run both the Vite dev server and your Express server:
+Add a script to your `package.json`:
 
 ```json filename="package.json" copy
 {
   "scripts": {
     "dev:frontend": "vite",
     "dev:backend": "tsx watch server.ts",
-    "dev": "concurrently \"npm run dev:frontend\" \"npm run dev:backend\"",
-    "build": "vite build",
-    "start": "node dist/server.js",
-    "preview": "vite preview"
+    "dev": "concurrently \"npm run dev:frontend\" \"npm run dev:backend\""
   }
 }
 ```
 
-You'll need to install `concurrently` to run both servers simultaneously:
+### Connect to Your API
 
-```bash copy
-npm install -D concurrently
-```
-
-### Create a Client Utility
-
-Create a utility to connect to your Mastra backend:
+Create a simple client utility:
 
 ```typescript filename="src/lib/mastra-client.ts" copy
-// Define types for responses
-interface GenerateResponse {
-  text: string;
-}
-
-interface StreamChunk {
-  text: string;
-}
-
 export class MastraClient {
   private baseUrl: string;
   
@@ -424,16 +342,14 @@ export class MastraClient {
   // Get agent by ID
   getAgent(agentId: string) {
     return {
-      // Method to generate a complete response
-      generate: async (message: string): Promise<GenerateResponse> => {
+      // Generate a complete response
+      generate: async (params: { messages: { role: string; content: string }[] }) => {
         const response = await fetch(`${this.baseUrl}/agents/${agentId}/generate`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
           },
-          body: JSON.stringify({
-            messages: [message],
-          }),
+          body: JSON.stringify(params),
         });
         
         if (!response.ok) {
@@ -441,81 +357,6 @@ export class MastraClient {
         }
         
         return response.json();
-      },
-      
-      // Method to stream the response
-      stream: async (message: string, callbacks: {
-        onChunk: (chunk: string) => void;
-        onComplete: () => void;
-        onError: (error: Error) => void;
-      }) => {
-        try {
-          const response = await fetch(`${this.baseUrl}/agents/${agentId}/stream`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-              messages: [message],
-            }),
-          });
-          
-          if (!response.ok) {
-            throw new Error(`Failed to stream: ${response.statusText}`);
-          }
-          
-          const reader = response.body?.getReader();
-          if (!reader) {
-            throw new Error('Response body is not readable');
-          }
-          
-          const decoder = new TextDecoder();
-          
-          // Process the stream
-          const processStream = async () => {
-            try {
-              while (true) {
-                const { done, value } = await reader.read();
-                
-                if (done) {
-                  callbacks.onComplete();
-                  break;
-                }
-                
-                // Process the chunk
-                const chunk = decoder.decode(value, { stream: true });
-                const lines = chunk.split('\n\n');
-                
-                for (const line of lines) {
-                  if (line.startsWith('data: ')) {
-                    try {
-                      const data = JSON.parse(line.substring(6));
-                      callbacks.onChunk(data.text);
-                    } catch (e) {
-                      // Ignore parsing errors for incomplete chunks
-                    }
-                  }
-                }
-              }
-            } catch (error) {
-              callbacks.onError(error instanceof Error ? error : new Error(String(error)));
-            }
-          };
-          
-          processStream();
-          
-          // Return a function to cancel the stream
-          return {
-            cancel: () => {
-              reader.cancel();
-            }
-          };
-        } catch (error) {
-          callbacks.onError(error instanceof Error ? error : new Error(String(error)));
-          return {
-            cancel: () => {}
-          };
-        }
       }
     };
   }
@@ -525,300 +366,89 @@ export class MastraClient {
 export const mastraClient = new MastraClient();
 ```
 
-### React Component Example (with Streaming)
+### Example React Component
 
-```tsx filename="src/components/StreamingChat.tsx" copy
-import { useState, useEffect, useRef } from 'react'
-import { mastraClient } from '../lib/mastra-client'
+```tsx filename="src/components/WeatherWidget.tsx" copy
+import { useState } from 'react'
+import { mastraClient } from '../lib/mastra'
 
-export function StreamingChat() {
-  const [input, setInput] = useState('')
+export function WeatherWidget() {
+  const [city, setCity] = useState('')
   const [response, setResponse] = useState('')
   const [loading, setLoading] = useState(false)
-  const streamRef = useRef<{ cancel: () => void } | null>(null)
 
-  // Clean up stream on unmount
-  useEffect(() => {
-    return () => {
-      if (streamRef.current) {
-        streamRef.current.cancel()
-      }
-    }
-  }, [])
-
-  async function handleSubmit(e: React.FormEvent) {
+  async function handleSubmit(e) {
     e.preventDefault()
     setLoading(true)
-    setResponse('')
     
     try {
-      const agent = mastraClient.getAgent('chatAgent')
-      
-      streamRef.current = await agent.stream(input, {
-        onChunk: (chunk) => {
-          setResponse(prev => prev + chunk)
-        },
-        onComplete: () => {
-          setLoading(false)
-          streamRef.current = null
-        },
-        onError: (error) => {
-          console.error('Stream error:', error)
-          setResponse(prev => prev + '\n\nError: Failed to complete response.')
-          setLoading(false)
-          streamRef.current = null
-        }
+      const agent = mastraClient.getAgent('weatherAgent')
+      const result = await agent.generate({
+        messages: [{
+          role: 'user',
+          content: `What's the weather like in ${city}?`
+        }]
       })
+      setResponse(result.text)
     } catch (error) {
       console.error('Error:', error)
-      setResponse('Failed to generate response')
+      setResponse('Failed to get weather information')
+    } finally {
       setLoading(false)
     }
   }
 
   return (
-    <div className="chat-container">
+    <div>
       <form onSubmit={handleSubmit}>
-        <textarea
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          placeholder="Ask something..."
-          rows={4}
+        <input 
+          value={city}
+          onChange={(e) => setCity(e.target.value)}
+          placeholder="Enter city name" 
         />
-        <button type="submit" disabled={loading || !input.trim()}>
-          {loading ? 'Generating...' : 'Send'}
+        <button type="submit" disabled={loading}>
+          {loading ? 'Loading...' : 'Get Weather'}
         </button>
       </form>
       
-      <div className="response">
-        {response && (
-          <div>
-            <h3>Response:</h3>
-            <div className="response-content">
-              {response}
-              {loading && <span className="cursor">▌</span>}
-            </div>
-          </div>
-        )}
-      </div>
+      {response && (
+        <div>
+          <h3>Weather Information:</h3>
+          <p>{response}</p>
+        </div>
+      )}
     </div>
   )
 }
 ```
 
-### Vue Component Example (with Streaming)
-
-```vue filename="src/components/StreamingChat.vue" copy
-<script setup>
-import { ref, onUnmounted } from 'vue'
-import { mastraClient } from '../lib/mastra-client'
-
-const input = ref('')
-const response = ref('')
-const loading = ref(false)
-let streamController = null
-
-// Clean up stream on unmount
-onUnmounted(() => {
-  if (streamController) {
-    streamController.cancel()
-  }
-})
-
-async function handleSubmit() {
-  loading.value = true
-  response.value = ''
-  
-  try {
-    const agent = mastraClient.getAgent('chatAgent')
-    
-    streamController = await agent.stream(input.value, {
-      onChunk: (chunk) => {
-        response.value += chunk
-      },
-      onComplete: () => {
-        loading.value = false
-        streamController = null
-      },
-      onError: (error) => {
-        console.error('Stream error:', error)
-        response.value += '\n\nError: Failed to complete response.'
-        loading.value = false
-        streamController = null
-      }
-    })
-  } catch (error) {
-    console.error('Error:', error)
-    response.value = 'Failed to generate response'
-    loading.value = false
-  }
-}
-</script>
-
-<template>
-  <div class="chat-container">
-    <form @submit.prevent="handleSubmit">
-      <textarea
-        v-model="input"
-        placeholder="Ask something..."
-        rows="4"
-      ></textarea>
-      <button type="submit" :disabled="loading || !input.trim()">
-        {{ loading ? 'Generating...' : 'Send' }}
-      </button>
-    </form>
-    
-    <div class="response" v-if="response">
-      <h3>Response:</h3>
-      <div class="response-content">
-        {{ response }}
-        <span v-if="loading" class="cursor">▌</span>
-      </div>
-    </div>
-  </div>
-</template>
-
-<style scoped>
-.chat-container {
-  max-width: 600px;
-  margin: 0 auto;
-}
-
-textarea {
-  width: 100%;
-  padding: 8px;
-  margin-bottom: 10px;
-}
-
-.response {
-  margin-top: 20px;
-  padding: 10px;
-  background-color: #f5f5f5;
-  border-radius: 4px;
-}
-
-.cursor {
-  display: inline-block;
-  animation: blink 1s step-start infinite;
-}
-
-@keyframes blink {
-  50% {
-    opacity: 0;
-  }
-}
-</style>
-```
-
 ### Deployment
 
-When deploying a Vite application with direct Mastra integration, there are a few approaches:
+When deploying your Vite application with Mastra:
 
-1. **Static Frontend + Separate API Server**:
-   - Build your Vite app with `vite build`
-   - Deploy the static assets to a CDN (Netlify, Vercel, etc.)
-   - Deploy your Express server separately to a Node.js hosting service
-
-2. **Combined Frontend and Backend**:
-   - Modify your Express server to also serve the built Vite assets
-   - Deploy the combined application to a Node.js platform
-
-Here's how to configure your Express server to serve Vite's built assets:
-
-```typescript filename="server.ts" copy
-import express from 'express';
-import cors from 'cors';
-import path from 'path';
-import { mastra } from './mastra';
-
-const app = express();
-const port = process.env.PORT || 4111;
-
-app.use(cors());
-app.use(express.json());
-
-// Add API routes
-// ... (your agent routes here)
-
-// Serve static assets in production
-if (process.env.NODE_ENV === 'production') {
-  // Serve static files from the Vite build directory
-  app.use(express.static(path.join(__dirname, 'dist')));
-  
-  // All other GET requests not handled before will return the Vite app
-  app.get('*', (req, res) => {
-    res.sendFile(path.join(__dirname, 'dist', 'index.html'));
-  });
-}
-
-app.listen(port, () => {
-  console.log(`Server running on port ${port}`);
-});
-```
-
-Then update your build script in `package.json`:
-
-```json
-{
-  "scripts": {
-    "build": "vite build && tsc -p tsconfig.server.json",
-    "start": "NODE_ENV=production node dist-server/server.js"
-  }
-}
-```
-
-Create a separate `tsconfig.server.json` for your server code:
-
-```json filename="tsconfig.server.json" copy
-{
-  "extends": "./tsconfig.json",
-  "compilerOptions": {
-    "module": "CommonJS",
-    "outDir": "dist-server",
-    "noEmit": false
-  },
-  "include": ["server.ts", "mastra/**/*"]
-}
-```
+1. Build your Vite app with `vite build`
+2. Deploy the frontend to a static hosting service (Netlify, Vercel, etc.)
+3. Deploy your Express server to a Node.js hosting platform
+4. Configure environment variables to connect the frontend to your backend
 
 </Steps>
 
 ## Observability
 
-Mastra provides built-in observability features to help you monitor, debug, and optimize your AI operations. This includes:
-- Tracing of AI operations and their performance
-- Logging of prompts, completions, and errors
-- Integration with observability platforms like Langfuse and LangSmith
+Mastra provides built-in observability features to monitor, debug, and optimize your AI operations. For detailed setup instructions, see our [Observability Configuration Guide](/docs/observability/tracing).
 
-For detailed setup instructions and configuration options for Vite applications, see our [Observability Configuration Guide](/docs/observability/tracing).
+## Environment Variables in Vite
 
-## Best Practices for Vite and Mastra
+<Callout type="info">
+In Vite, client-side environment variables must be prefixed with `VITE_` to be accessible in your code.
+</Callout>
 
-### Environment Variables
-
-Vite has specific requirements for environment variables:
-- Client-side variables must be prefixed with `VITE_` (e.g., `VITE_MASTRA_API_URL`)
-- Only variables with this prefix are exposed to your Vite application
-- Create separate `.env` files for different environments:
-  - `.env.development`
-  - `.env.production`
-
-Example:
+Example `.env.development` file:
 ```bash filename=".env.development" copy
 VITE_MASTRA_API_URL=http://localhost:4111
 ```
 
-### Handling API Keys
-
-Never expose your LLM API keys directly in your Vite frontend code. Always keep them on your backend server.
-
-### Optimizing for Production
-
-When deploying to production:
-1. Use Vite's production build: `vite build`
-2. Consider code-splitting to reduce initial bundle size
-3. Implement proper error handling for AI interactions
-4. Add retry logic for resilience against API failures
-5. Cache common responses when appropriate
-
-These practices will ensure your Mastra-powered Vite application is performant, secure, and provides a good user experience.
+Access in your code with:
+```js
+const apiUrl = import.meta.env.VITE_MASTRA_API_URL
+```
